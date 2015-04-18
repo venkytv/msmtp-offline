@@ -20,3 +20,7 @@ Requires ruby.  (This was developed on version 2.2.0, but the script *should* ru
   set sendmail = /path/to/msmtp-offline
   set sendmail_wait = -1
 ```
+
+#### Known Issues
+
+* Uses `flock`, which has known issues with NFS-mounted directories.  If your home directory is NFS-mounted, your milage may vary.
