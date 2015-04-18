@@ -65,26 +65,26 @@ end
 
 # Check if the specified host and port is accessible
 def accessible?(host, port, timeout = 2)
-  # http://stackoverflow.com/a/21014439
+  # Based on: http://stackoverflow.com/a/21014439
 
   # Convert the passed host into structures the non-blocking calls
   # can deal with
-  addr = nil
+  addrinfo = nil
+  sockaddr = nil
   begin
-    addr = Socket.getaddrinfo(host, nil)
+    addrinfo = Addrinfo.tcp(host, port.to_i)
+    sockaddr = addrinfo.to_sockaddr
   rescue SocketError => e
     $logger.info("Socket error: #{host}:#{port}: #{e}")
     return false
   end
 
-  sockaddr = Socket.pack_sockaddr_in(port, addr[0][3])
-
-  Socket.new(Socket.const_get(addr[0][0]), Socket::SOCK_STREAM, 0).tap do |socket|
+  Socket.new(addrinfo.afamily, Socket::SOCK_STREAM, 0).tap do |socket|
     socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
     begin
-      # Initiate the socket connection in the background. If it doesn't fail 
-      # immediatelyit will raise an IO::WaitWritable (Errno::EINPROGRESS) 
+      # Initiate the socket connection in the background. If it doesn't fail
+      # immediately, it will raise an IO::WaitWritable (Errno::EINPROGRESS)
       # indicating the connection is in progress.
       socket.connect_nonblock(sockaddr)
 
@@ -101,11 +101,12 @@ def accessible?(host, port, timeout = 2)
           return true
         rescue
           # An unexpected exception was raised - the connection is no good.
+          $logger.info("Socket error: #{host}:#{port}")
           socket.close
           return false
         end
       else
-        # IO.select returns nil when the socket is not ready before timeout 
+        # IO.select returns nil when the socket is not ready before timeout
         # seconds have elapsed
         socket.close
         $logger.info("Connection timeout: #{host}:#{port}")
