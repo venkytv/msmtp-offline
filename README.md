@@ -14,6 +14,7 @@ Requires ruby.  (This was developed on version 2.2.0, but the script *should* ru
 (This script is primarily designed for use with `mutt`, but does not have any hard dependencies on it.  Usage instuctions below apply only to `mutt`, though.)
 
 * Copy the `msmtp-offline` and `msmtp-queue` scripts to any directory in your PATH
+* Create a `log` directory in your HOME, if you don't have one already.
 * Set the following lines in your `.muttrc` file:
 ```
   set sendmail = /path/to/msmtp-offline
