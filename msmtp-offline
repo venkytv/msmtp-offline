@@ -1,0 +1,261 @@
+#!/usr/bin/env ruby
+
+require 'fileutils'
+require 'optparse'
+require 'logger'
+require 'socket'
+
+QDIR = ENV['QDIR'] || File.join(ENV['HOME'], '.msmtp-offline.queue')
+LOGFILE = ENV['LOGFILE'] || File.join(ENV['HOME'], 'log', 'msmtp-offline.log')
+
+$logger = Logger.new(LOGFILE)
+$logger.level = (ENV['DEBUG'] ? Logger::DEBUG : Logger::INFO)
+
+# Basic parsing of the msmtprc file to get hold of the SMTP host and port
+def smtp_host_port
+  options = {
+    :conffile => File.join(ENV['HOME'], '.msmtprc'),
+    :account => nil,
+  }
+
+  argv_c = ARGV.clone
+  while (arg = argv_c.shift)
+    if (arg =~ /^-a(.*)/)
+      options[:account] = ($1.length > 0 ? $1 : argv_c.shift)
+    elsif (arg =~ /^--account=(.+)/)
+      options[:account] = $1
+    elsif (arg =~ /^-C(.*)/)
+      options[:conffile] = ($1.length > 0 ? $1 : argv_c.shift)
+    elsif (arg =~ /^--file=(.+)/)
+      options[:conffile] = $1
+    end
+  end
+
+  accounts = { 'defaults' => {} }
+  defaccount = nil
+  curr = nil
+  File.open(options[:conffile]) do |f|
+    lines = f.readlines
+    while (line = lines.shift)
+      if (line =~ /^\s*defaults\s*$/)
+        curr = 'defaults'
+      elsif (line =~ /^\s*account\s+default\s*:\s*([^\s]+)/)
+        defaccount = $1
+      elsif (line =~ /^\s*account\s+([^\s]+)/)
+        curr = $1
+        defaccount = $1 unless defaccount
+        accounts[$1] = {}
+      elsif (line =~ /^\s*host\s+([^\s]+)/)
+        accounts[curr][:host] = $1 if curr
+      elsif (line =~ /^\s*port\s+([^\s]+)/)
+        accounts[curr][:port] = $1 if curr
+      end
+    end
+  end
+
+  account = options[:account] || defaccount
+  abort "Unknown account: #{account}" unless accounts[account]
+  host = accounts[account][:host]
+  port = accounts[account][:port] || accounts['defaults'][:port]
+
+  return host, port
+end
+
+# Check if the specified host and port is accessible
+def accessible?(host, port, timeout = 2)
+  # http://stackoverflow.com/a/21014439
+
+  # Convert the passed host into structures the non-blocking calls
+  # can deal with
+  addr = nil
+  begin
+    addr = Socket.getaddrinfo(host, nil)
+  rescue SocketError => e
+    $logger.info("Socket error: #{host}:#{port}: #{e}")
+    return false
+  end
+
+  sockaddr = Socket.pack_sockaddr_in(port, addr[0][3])
+
+  Socket.new(Socket.const_get(addr[0][0]), Socket::SOCK_STREAM, 0).tap do |socket|
+    socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+
+    begin
+      # Initiate the socket connection in the background. If it doesn't fail 
+      # immediatelyit will raise an IO::WaitWritable (Errno::EINPROGRESS) 
+      # indicating the connection is in progress.
+      socket.connect_nonblock(sockaddr)
+
+    rescue IO::WaitWritable
+      # IO.select will block until the socket is writable or the timeout
+      # is exceeded - whichever comes first.
+      if IO.select(nil, [socket], nil, timeout)
+        begin
+          # Verify there is now a good connection
+          socket.connect_nonblock(sockaddr)
+        rescue Errno::EISCONN
+          # Good news everybody, the socket is connected!
+          return true
+        rescue
+          # An unexpected exception was raised - the connection is no good.
+          socket.close
+          return false
+        end
+      else
+        # IO.select returns nil when the socket is not ready before timeout 
+        # seconds have elapsed
+        socket.close
+        $logger.info("Connection timeout: #{host}:#{port}")
+        return false
+      end
+    rescue SocketError => e
+      $logger.info("Socket error: #{host}:#{port}: #{e}")
+      return false
+    end
+  end
+end
+
+# Try to send queued mail out.
+def sendmail(id)
+  qmailfile = File.join(QDIR, "#{id}.mail")
+  qcommfile = File.join(QDIR, "#{id}.comm")
+
+  raise "Queued mail not found: #{id}" \
+    unless File.exist?(qmailfile) and File.exist?(qcommfile)
+
+  mail_sent = false
+  File.open(qcommfile) do |f|
+    unless (f.flock(File::LOCK_EX | File::LOCK_NB))
+      $logger.info("Queue file locked: #{qcommfile}")
+      return
+    end
+
+    comm = %w( msmtp )
+    f.readlines.each do |arg|
+      arg.chomp!
+      comm.push(arg)
+    end
+    $logger.debug { "MSMTP command line: #{comm.inspect}" }
+
+    File.open(qmailfile) do |f|
+      IO.popen(comm, "w") do |p|
+        p.write(f.read)
+      end
+    end
+    $logger.info("#{id}: MSMTP exit status: #{$?}")
+    mail_sent = $?.success?
+    File.unlink qmailfile if mail_sent
+  end
+  File.unlink qcommfile if mail_sent
+end
+
+# List IDs of messages in queue
+def list_queue
+  queue = []
+  Dir["#{QDIR}/*.mail"].sort.each do |file|
+    queue.push(File.basename(file, '.mail'))
+  end
+  queue
+end
+
+# Fetch details of a specified queued mail
+def mail_details(id)
+  qmailfile = File.join(QDIR, "#{id}.mail")
+  mdet = {:id => id}
+  File.open(qmailfile) do |f|
+    while line = f.gets
+      line.chomp!
+      next if line =~ /^$/
+      %w( to subject date ).each do |field|
+        if (line =~ /^#{field}:\s*(.*)/i)
+          mdet[field] = $1
+        end
+      end
+    end
+  end
+  return mdet
+end
+
+# Display details of specified queued mail
+def queue_display(id)
+  mdet = mail_details(id)
+  puts mdet[:id]
+  %w( to subject date ).each do |field|
+    puts "\t#{field.capitalize}: #{mdet[field]}" if mdet[field]
+  end
+  puts
+end
+
+#-------------- MAIN ---------------
+
+if (ARGV[0] == '+q')
+  # Queue-management commands
+
+  ARGV.shift
+
+  options = {}
+
+  optparse = OptionParser.new do |opts|
+    opts.banner = "usage: #{$0} +qmgmt <queue-management-options>"
+
+    opts.on('-l', '--list',
+            'List queued messages') do |v|
+      options[:list] = true
+    end
+
+    opts.on('-q', '--flush[=ID]',
+            'Flush specified (or all) queued messages') do |v|
+      options[:flush] = v || :all
+    end
+  end.parse!
+
+  if (options[:list])
+    list_queue.each {|i| queue_display(i)}
+  elsif (options[:flush])
+    list = (options[:flush] == :all ? list_queue : [ options[:flush] ])
+    list.each do |id|
+      puts "Flushing email: #{id}"
+      sendmail(id)
+    end
+  else
+    list_queue.each {|i| queue_display(i)}
+  end
+
+else
+  # Sendmail-compatible mode
+
+  Dir.mkdir(QDIR) unless Dir.exists? QDIR
+
+  t = Time.new
+  qfilebase = sprintf("%04d-%02d-%02d-%02d%02d%02d-%d",
+                      t.year, t.month, t.day, t.hour, t.min, t.sec, rand(100000))
+  qmailfile = File.join(QDIR, "#{qfilebase}.mail")
+  qcommfile = File.join(QDIR, "#{qfilebase}.comm")
+  qtmpfile  = File.join(QDIR, "#{qfilebase}.tmp")
+
+  # Write mail file first.  The sender locks the command file before attempting
+  # a flush.  Existence of the command file indicates the mail is ready for
+  # flusing.
+
+  File.open(qmailfile, 'w') do |f|
+    f.write($stdin.read)
+  end
+
+  File.open(qtmpfile, 'w') do |f|
+    ARGV.each do |arg|
+      f.puts arg
+    end
+  end
+  FileUtils.mv qtmpfile, qcommfile
+
+  (host, port) = smtp_host_port
+  if accessible?(host, port)
+    # Attempt to flush the mail right away
+    sendmail(qfilebase)
+
+    # Attempt to flush all queued mail
+    list_queue.each {|id| sendmail(id)}
+  else
+    $logger.info { "Server inaccessible (#{host}:#{port}). Queueing message: #{qfilebase}" }
+  end
+end
