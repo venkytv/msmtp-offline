@@ -234,7 +234,7 @@ if (ARGV[0] == '+q')
 
   options = {}
   optparse = OptionParser.new do |opts|
-    opts.banner = "usage: #{$0} +qmgmt <queue-management-options>"
+    opts.banner = "usage: #{$0} +q <options>"
 
     opts.on('-l', '--list',
             'List queued messages') do |v|
