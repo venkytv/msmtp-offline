@@ -7,18 +7,20 @@ require 'socket'
 
 QDIR = ENV['QDIR'] || File.join(ENV['HOME'], '.msmtp-offline.queue')
 LOGFILE = ENV['LOGFILE'] || File.join(ENV['HOME'], 'log', 'msmtp-offline.log')
+QFLUSH_INTERVAL = 30
 
 $logger = Logger.new(LOGFILE)
 $logger.level = (ENV['DEBUG'] ? Logger::DEBUG : Logger::INFO)
+$logger.progname = 'flusher'
 
 # Basic parsing of the msmtprc file to get hold of the SMTP host and port
-def smtp_host_port
+def smtp_host_port(argv)
   options = {
     :conffile => File.join(ENV['HOME'], '.msmtprc'),
     :account => nil,
   }
 
-  argv_c = ARGV.clone
+  argv_c = argv.clone
   while (arg = argv_c.shift)
     if (arg =~ /^-a(.*)/)
       options[:account] = ($1.length > 0 ? $1 : argv_c.shift)
@@ -186,15 +188,51 @@ def queue_display(id)
   puts
 end
 
+def get_command_args(id)
+  argv = []
+  File.open(File.join(QDIR, "#{id}.comm")) do |f|
+    f.readlines.each do |line|
+      argv.push(line.chomp)
+    end
+  end
+  argv
+end
+
+def launch_watcher
+  $logger.progname = 'watcher'
+  File.open($0) do |l|
+    unless (l.flock(File::LOCK_EX | File::LOCK_NB))
+      $logger.info("Another watcher running.")
+      exit
+    end
+
+    $logger.info("Waiting for network")
+    while (list_queue.length > 0)
+      sleep(QFLUSH_INTERVAL)
+      servers = {}
+      list_queue.each do |id|
+        (host, port) = smtp_host_port(get_command_args(id))
+        srv = "#{host}:#{port}"
+        servers[srv] = accessible?(host, port, 10) unless servers.key?(srv)
+        if servers[srv]
+          $logger.info("Attempting to flush mail: #{id}")
+          sendmail(id)
+        end
+      end
+    end
+    $logger.info("Queue empty. Watcher exiting.")
+  end
+end
+
 #-------------- MAIN ---------------
 
 if (ARGV[0] == '+q')
   # Queue-management commands
-
   ARGV.shift
 
-  options = {}
+  $logger.progname = 'qmanagr'
 
+  options = {}
   optparse = OptionParser.new do |opts|
     opts.banner = "usage: #{$0} +qmgmt <queue-management-options>"
 
@@ -248,7 +286,7 @@ else
   end
   FileUtils.mv qtmpfile, qcommfile
 
-  (host, port) = smtp_host_port
+  (host, port) = smtp_host_port(ARGV)
   if accessible?(host, port)
     # Attempt to flush the mail right away
     sendmail(qfilebase)
@@ -257,5 +295,6 @@ else
     list_queue.each {|id| sendmail(id)}
   else
     $logger.info { "Server inaccessible (#{host}:#{port}). Queueing message: #{qfilebase}" }
+    launch_watcher
   end
 end
