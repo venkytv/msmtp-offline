@@ -97,6 +97,7 @@ def accessible?(host, port, timeout = 2)
           socket.connect_nonblock(sockaddr)
         rescue Errno::EISCONN
           # Good news everybody, the socket is connected!
+          socket.close
           return true
         rescue
           # An unexpected exception was raised - the connection is no good.
