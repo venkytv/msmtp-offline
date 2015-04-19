@@ -11,6 +11,7 @@ QFLUSH_INTERVAL = 30
 
 $NO_WATCHER = ENV['NO_WATCHER'] || false
 $FORK_SEND = ENV['FORK_SEND'] || false
+$FORCE_QUEUE = ENV['FORCE_QUEUE'] || false
 
 $logger = Logger.new(LOGFILE)
 $logger.level = (ENV['DEBUG'] ? Logger::DEBUG : Logger::INFO)
@@ -292,7 +293,9 @@ else
   # Consume msmtp-offline parameters (with a '+' prefix)
   while (ARGV.first.start_with?('+'))
     arg = ARGV.shift
-    if (arg == '+fork')
+    if (arg == '+forcequeue')
+      $FORCE_QUEUE = true
+    elsif (arg == '+fork')
       $FORK_SEND = true
     elsif (arg == '+nowatcher')
       $NO_WATCHER = true
@@ -325,13 +328,17 @@ else
   end
   FileUtils.mv qtmpfile, qcommfile
 
-  (host, port) = smtp_host_port(ARGV)
-  if accessible?(host, port)
-    launch('Sending email', Proc.new { launch_sender(qfilebase) })
+  if $FORCE_QUEUE
+    $logger.info { "Not attempting to deliver. Queueing message: #{qfilebase}" }
   else
-    $logger.info { "Server inaccessible (#{host}:#{port}). Queueing message: #{qfilebase}" }
-    unless $NO_WATCHER
-      launch('Starting watcher', Proc.new { launch_watcher })
+    (host, port) = smtp_host_port(ARGV)
+    if accessible?(host, port)
+      launch('Sending email', Proc.new { launch_sender(qfilebase) })
+    else
+      $logger.info { "Server inaccessible (#{host}:#{port}). Queueing message: #{qfilebase}" }
+      unless $NO_WATCHER
+        launch('Starting watcher', Proc.new { launch_watcher })
+      end
     end
   end
 end

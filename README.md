@@ -42,6 +42,14 @@ If the watcher is disabled, msmtp-offline will only attempt to flush any queued
 messages the next time you send an email.  Of course, you can always use
 `msmtp-queue` to flush queued mails manually.
 
+If you want to disable connection tests entirely and hold all email until they
+are flushed manually, use the `+forcequeue` option or the `FORCE_QUEUE`
+environment variable.
+```
+   /path/to/msmtp-offline +forcequeue <any-msmtp-options>
+   FORCE_QUEUE=1 /path/to/msmtp-offline <any-msmtp-options>
+```
+
 __IMPORTANT__: msmtp-offline options (starting with '+') need to be specified *before* any `msmtp` options.
 
 #### Known Issues
