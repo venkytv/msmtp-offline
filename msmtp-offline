@@ -9,6 +9,9 @@ QDIR = ENV['QDIR'] || File.join(ENV['HOME'], '.msmtp-offline.queue')
 LOGFILE = ENV['LOGFILE'] || File.join(ENV['HOME'], 'log', 'msmtp-offline.log')
 QFLUSH_INTERVAL = 30
 
+$NO_WATCHER = ENV['NO_WATCHER'] || false
+$FORK_SEND = ENV['FORK_SEND'] || false
+
 $logger = Logger.new(LOGFILE)
 $logger.level = (ENV['DEBUG'] ? Logger::DEBUG : Logger::INFO)
 $logger.progname = 'flusher'
@@ -226,6 +229,28 @@ def launch_watcher
   end
 end
 
+def launch_sender(id)
+    # Attempt to flush the mail right away
+    sendmail(id)
+
+    # Attempt to flush all queued mail
+    list_queue.each {|i| sendmail(i)}
+end
+
+def launch(action, proc)
+  if $FORK_SEND
+    if not Process.respond_to?(:fork)
+      $logger.warn { "Fork not supported.  #{action} in-process." }
+      proc.call
+    else
+      $logger.info { "#{action} in the background." }
+      fork { proc.call }
+    end
+  else
+    proc.call
+  end
+end
+
 #-------------- MAIN ---------------
 
 if (ARGV[0] == '+q')
@@ -264,6 +289,18 @@ if (ARGV[0] == '+q')
 else
   # Sendmail-compatible mode
 
+  # Consume msmtp-offline parameters (with a '+' prefix)
+  while (ARGV.first.start_with?('+'))
+    arg = ARGV.shift
+    if (arg == '+fork')
+      $FORK_SEND = true
+    elsif (arg == '+nowatcher')
+      $NO_WATCHER = true
+    else
+      $logger.warn { "Ignoring unknown argument: #{arg}" }
+    end
+  end
+
   Dir.mkdir(QDIR) unless Dir.exists? QDIR
 
   t = Time.new
@@ -290,13 +327,11 @@ else
 
   (host, port) = smtp_host_port(ARGV)
   if accessible?(host, port)
-    # Attempt to flush the mail right away
-    sendmail(qfilebase)
-
-    # Attempt to flush all queued mail
-    list_queue.each {|id| sendmail(id)}
+    launch('Sending email', Proc.new { launch_sender(qfilebase) })
   else
     $logger.info { "Server inaccessible (#{host}:#{port}). Queueing message: #{qfilebase}" }
-    launch_watcher
+    unless $NO_WATCHER
+      launch('Starting watcher', Proc.new { launch_watcher })
+    end
   end
 end
