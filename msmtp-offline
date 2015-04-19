@@ -64,7 +64,7 @@ def smtp_host_port(argv)
   host = accounts[account][:host]
   port = accounts[account][:port] || accounts['defaults'][:port]
 
-  return host, port
+  return host, port, account
 end
 
 # Check if the specified host and port is accessible
@@ -181,13 +181,16 @@ def mail_details(id)
       end
     end
   end
+
+  (host, port, account) = smtp_host_port(get_command_args(id))
+  mdet[:account] = account
   return mdet
 end
 
 # Display details of specified queued mail
 def queue_display(id)
   mdet = mail_details(id)
-  puts mdet[:id]
+  puts "#{mdet[:id]}  (#{mdet[:account]})"
   %w( to subject date ).each do |field|
     puts "\t#{field.capitalize}: #{mdet[field]}" if mdet[field]
   end
