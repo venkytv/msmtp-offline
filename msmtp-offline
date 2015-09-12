@@ -22,6 +22,7 @@ def smtp_host_port(argv)
   options = {
     :conffile => File.join(ENV['HOME'], '.msmtprc'),
     :account => nil,
+    :from => nil,
   }
 
   argv_c = argv.clone
@@ -34,6 +35,8 @@ def smtp_host_port(argv)
       options[:conffile] = ($1.length > 0 ? $1 : argv_c.shift)
     elsif (arg =~ /^--file=(.+)/)
       options[:conffile] = $1
+    elsif (arg =~ /^-f(.*)/)
+      options[:from] = ($1.length > 0 ? $1 : argv_c.shift)
     end
   end
 
@@ -53,13 +56,23 @@ def smtp_host_port(argv)
         accounts[$1] = {}
       elsif (line =~ /^\s*host\s+([^\s]+)/)
         accounts[curr][:host] = $1 if curr
+      elsif (line =~ /^\s*from\s+([^\s]+)/)
+        accounts[curr][:from] = $1 if curr
       elsif (line =~ /^\s*port\s+([^\s]+)/)
         accounts[curr][:port] = $1 if curr
       end
     end
   end
 
-  account = options[:account] || defaccount
+  account = options[:account]
+  if !account
+    accounts.each do |k, v|
+      account = k if v[:from] == options[:from]
+      break if account
+    end
+  end
+  account = defaccount if !account
+
   abort "Unknown account: #{account}" unless accounts[account]
   host = accounts[account][:host]
   port = accounts[account][:port] || accounts['defaults'][:port]
